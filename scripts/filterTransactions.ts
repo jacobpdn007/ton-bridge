@@ -1,10 +1,12 @@
 import { Cell } from "@ton/core";
 import axios from "axios";
+import { bs58 } from "@coral-xyz/anchor/dist/cjs/utils/bytes";
 
 const indexerUrl = "https://testnet.toncenter.com/api/v3/transactions";
 
-const bridgeGateAddress = "kQBWf-_e243JMDqLQopK_F2xp1vc4Si2qYlwTWfMvo-K5dsM";
-const TransferEventOPCode = "0xd02bdf21";
+const bridgeGateAddress = "UQCYGovtmogjI_nVFLfu2QouyNLbwFQ9wxqorZUU6UTe5xND";
+const BridgeOutOPCode = 3909295382n;
+const RelayerExecuteOPCode = 3498294476n;
 
 interface MessageContent {
     hash: string;
@@ -23,6 +25,10 @@ interface Transaction {
     };
     out_msgs: OutMsg[];
     now: number;
+}
+
+function bigintToSolanaAddr(addr: bigint) {
+    return bs58.encode(Buffer.from(addr.toString(16), "hex"));
 }
 
 async function fetchBridgeTransactions(startTime: number, endTime: number) {
@@ -47,41 +53,52 @@ async function fetchBridgeTransactions(startTime: number, endTime: number) {
     }
 }
 
-function analyzeTransferMessage(tx: Transaction) {
-    // Solana -> TON, 从 BridgeGate 发送 token 到用户
-    // decodeInMsg(tx.in_msg.msg_content.body)
-
-    // TON -> Solana, 用户 transfer token 到 BridgeGate
-    decodeOutMsg(tx);
-}
-
-function decodeOutMsg(tx: Transaction) {
+function analyzeBridgeTransactions(tx: Transaction) {
     for (const msg of tx.out_msgs) {
         const cell = Cell.fromBase64(msg.message_content.body);
         const slice = cell.beginParse();
 
-        const op = slice.loadUint(32);
-        if (op != parseInt(TransferEventOPCode, 16)) {
-            return;
+        const op = slice.loadUintBig(32);
+        const queryId = slice.loadUintBig(64);
+
+        if (op == BridgeOutOPCode && queryId == BigInt(0)) {
+            const remoteChainEndId = slice.loadUint(32);
+            const localTokenAddr = slice.loadAddress();
+            const remoteTokenAddr = bigintToSolanaAddr(
+                slice.loadRef().beginParse().loadUintBig(512)
+            );
+            const counter = slice.loadUintBig(128);
+            const from = slice.loadAddress();
+            const remoteReceiverAddr = bigintToSolanaAddr(
+                slice.loadRef().beginParse().loadUintBig(512)
+            );
+
+            const slice_1 = slice.loadRef().beginParse();
+            const fixedFee = slice_1.loadUintBig(256);
+            const volumeFee = slice_1.loadUintBig(256);
+            const bridge_amount = slice_1.loadUintBig(256);
+            const guid = slice.loadRef().beginParse().loadUintBig(256);
+
+            console.log(
+                `BridgeOut guid: ${guid}, remoteChainID: ${remoteChainEndId}, ton token address: ${localTokenAddr}, solana token address: ${remoteTokenAddr}, counter: ${counter}, from ton: ${from}, to solana: ${remoteReceiverAddr}`
+            );
+            console.log(
+                `amount: ${bridge_amount}, fixedFee: ${fixedFee}, volumeFee: ${volumeFee}`
+            );
+        } else if (op == RelayerExecuteOPCode && queryId == BigInt(0)) {
+            const guid = slice.loadUintBig(256);
+            const bridgeAmount = slice.loadUintBig(256);
+            const slice_1 = slice.loadRef().beginParse();
+            const tokenAddr = slice_1.loadAddress();
+            const receiverAddr = slice_1.loadAddress();
+            console.log(
+                `Relayer Executed guid: ${guid}, amount: ${bridgeAmount}, ton token address: ${tokenAddr}, ton receiver: ${receiverAddr}`
+            );
         }
-        const msgSender = slice.loadAddress();
-        const tokenSender = slice.loadAddress();
-        const jettonAmount = slice.loadCoins();
-
-        const maybeRef = slice.loadBit();
-
-        const payload = maybeRef ? slice.loadRef().beginParse() : slice;
-        const payloadOp = payload.loadUint(32);
-        if (payloadOp != 0) {
-            console.log("no text comment in transfer_notification");
-        }
-        const comment = payload.loadStringTail();
-
-        console.log(tx.hash, msgSender, tokenSender, jettonAmount, comment);
     }
 }
 
-let startTime = 1727344791;
+let startTime = 1728109959;
 let endTime = Math.floor(Date.now() / 1000);
 
 setInterval(async () => {
@@ -90,7 +107,7 @@ setInterval(async () => {
     const transactions = await fetchBridgeTransactions(startTime, endTime);
 
     for (const tx of transactions) {
-        analyzeTransferMessage(tx);
+        analyzeBridgeTransactions(tx);
     }
 
     startTime = endTime + 1;
